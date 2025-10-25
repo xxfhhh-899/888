@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=0" name="viewport">
+    <title>Title</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+        }
+
+        .content-container {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content {
+            flex: 1;
+            border: none;
+            transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        .content.loaded {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .loading-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            z-index: 10;
+            transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(0, 122, 255, 0.15);
+            border-radius: 50%;
+            border-top-color: #007AFF;
+            border-bottom-color: #007AFF;
+            animation: spin 1.2s cubic-bezier(0.6, 0, 0.4, 1) infinite;
+            margin-bottom: 18px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: #555;
+            font-size: 15px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+            animation: breathe 2s ease-in-out infinite;
+        }
+
+        @keyframes breathe {
+            0%, 100% { opacity: 0.85; }
+            50% { opacity: 1; }
+        }
+
+        .loading-indicator.fade-out {
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0.9);
+        }
+
+        .custom-content {
+            flex: 1;
+            display: none;
+            padding: 20px;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
+        }
+
+        .custom-content.show {
+            display: block;
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .custom-content h2 {
+            color: #333;
+        }
+
+        .custom-content p {
+            line-height: 1.6;
+            color: #666;
+        }
+
+        .custom-actions {
+            margin-top: 20px;
+        }
+
+        .custom-actions button {
+            margin-right: 10px;
+            padding: 8px 15px;
+            background-color: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.15s ease;
+        }
+
+        .custom-actions button:hover {
+            background-color: #0051a8;
+            transform: translateY(-1px);
+        }
+
+        .custom-actions button:active {
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <div class="content-container">
+        <iframe class="content" title="加载的内容" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <div class="custom-content" id="customContent"></div>
+    </div>
+
+    <div class="loading-indicator">
+        <div class="spinner"></div>
+    </div>
+
+    <script>
+// 优化中文处理的Base64工具
+const base64Utils = {
+    // 还原URL安全的Base64编码
+    restoreUrlSafeBase64: (safeBase64Str) => {
+        let base64 = safeBase64Str.replace(/-/g, '+').replace(/_/g, '/');
+        const padLength = (4 - (base64.length % 4)) % 4;
+        return base64 + '='.repeat(padLength);
+    },
+    
+    // 核心调整：使用TextDecoder处理UTF-8中文
+    decode: (base64Str) => {
+        try {
+            const decodedBytes = atob(base64Str);
+            // 转换为Uint8Array处理原始字节（适配中文多字节）
+            const uint8Array = new Uint8Array(decodedBytes.length);
+            for (let i = 0; i < decodedBytes.length; i++) {
+                uint8Array[i] = decodedBytes.charCodeAt(i);
+            }
+            // 用UTF-8解码（完美支持中文）
+            return new TextDecoder('utf-8').decode(uint8Array);
+        } catch (e) {
+            console.error("解码错误:", e);
+            return null;
+        }
+    }
+};
+
+// 从URL中提取参数
+const getUrlParam = (paramName) => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get(paramName);
+};
+
+// 本地白名单 - 可在此处直接添加允许的域名
+const LOCAL_WHITELIST = [
+    ".fcxxnb.cn",
+    ".xs6.tech",  // 支持子域名形式，如 .google.com 匹配所有子域名
+    ".xiaoshuo.ru"
+    // 可以根据需要添加更多本地允许的域名
+];
+
+// 工具函数
+const utils = {
+    // 验证URL格式
+    validateUrl: (urlString) => {
+        if (!urlString) return false;
+        try {
+            const url = new URL(urlString);
+            return url.protocol === 'http:' || url.protocol === 'https:';
+        } catch (e) {
+            return false;
+        }
+    },
+    
+    // 检查域名是否在白名单中
+    checkDomainInWhitelist: (domain, whitelist) => {
+        if (!domain || !whitelist.length) return false;
+        return whitelist.some(d => 
+            domain === d || 
+            (d.startsWith('.') && domain.endsWith(d))
+        );
+    },
+    
+    // 检查域名是否在本地白名单中
+    checkDomainInLocalWhitelist: (domain) => {
+        return utils.checkDomainInWhitelist(domain, LOCAL_WHITELIST);
+    },
+    
+    // 获取远程白名单
+    fetchRemoteWhitelist: async (whitelistUrl) => {
+        try {
+            const response = await fetch(whitelistUrl);
+            if (!response.ok) {
+                throw new Error(`HTTP错误: ${response.status}`);
+            }
+            const data = await response.json();
+            return Array.isArray(data) ? data : [];
+        } catch (e) {
+            console.error("获取远程白名单失败:", e);
+            return [];
+        }
+    }
+};
+
+// 显示自定义内容
+const showCustomContent = (htmlContent) => {
+    const customContent = document.getElementById('customContent');
+    customContent.innerHTML = htmlContent;
+    setTimeout(() => {
+        customContent.classList.add('show');
+    }, 10);
+    document.querySelector('.content').style.display = 'none';
+    document.querySelector('.loading-indicator').classList.add('fade-out');
+    setTimeout(() => {
+        document.querySelector('.loading-indicator').style.display = 'none';
+    }, 300);
+};
+
+// 隐藏自定义内容
+const hideCustomContent = () => {
+    document.getElementById('customContent').classList.remove('show');
+    document.querySelector('.content').style.display = 'block';
+};
+
+// 主函数 - 实现本地白名单优先检测逻辑
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        // 1. 获取加密参数
+        const encryptedParam = getUrlParam('bypass');
+        if (!encryptedParam) {
+            throw new Error("缺少必要参数");
+        }
+        
+        // 2. 还原Base64编码
+        const restoredBase64 = base64Utils.restoreUrlSafeBase64(encryptedParam);
+        if (!restoredBase64) {
+            throw new Error("格式无效");
+        }
+        
+        // 3. 解码Base64（使用优化后的中文解码）
+        const finalUrl = base64Utils.decode(restoredBase64);
+        if (!finalUrl) {
+            throw new Error("包含无效字符");
+        }
+        
+        // 4. 验证URL格式
+        if (!utils.validateUrl(finalUrl)) {
+            throw new Error(`无效的格式: ${finalUrl}`);
+        }
+        
+        // 5. 解析URL获取域名
+        const urlObj = new URL(finalUrl);
+        const domain = urlObj.hostname;
+        
+        // 6. 优先检查本地白名单
+        let isAllowed = utils.checkDomainInLocalWhitelist(domain);
+        
+        // 7. 本地白名单无匹配，获取远程白名单
+        if (!isAllowed) {
+            const REMOTE_WHITELIST_URL = 'https://tunnels.network/Request/bypass.php';
+            const remoteWhitelist = await utils.fetchRemoteWhitelist(REMOTE_WHITELIST_URL);
+            
+            // 8. 检查远程白名单
+            if (remoteWhitelist.length === 0) {
+                throw new Error("无法获取远程白名单且本地白名单无匹配");
+            }
+            
+            isAllowed = utils.checkDomainInWhitelist(domain, remoteWhitelist);
+            if (!isAllowed) {
+                throw new Error(` ${domain} 为受限域名`);
+            }
+        }
+        
+        // 9. 提取并设置中文标题
+        const titleParam = urlObj.searchParams.get('xiaoshuo');
+        const decodedTitle = titleParam ? decodeURIComponent(titleParam) : 'Title';
+        document.title = decodedTitle;
+        
+        // 10. 加载URL到iframe
+        const iframe = document.querySelector('.content');
+        iframe.src = finalUrl;
+        
+        // 11. 处理加载完成事件
+        iframe.onload = () => {
+            document.querySelector('.loading-indicator').classList.add('fade-out');
+            setTimeout(() => {
+                iframe.classList.add('loaded');
+                document.querySelector('.loading-indicator').style.display = 'none';
+            }, 300);
+            hideCustomContent();
+        };
+        
+        // 12. 处理加载错误
+        iframe.onerror = () => {
+            throw new Error(`加载错误: ${finalUrl}`);
+        };
+        
+    } catch (error) {
+        showCustomContent(`
+            <div style="max-width: 600px; margin: 0 auto; text-align: center; padding: 40px 20px;">
+                <h2>访问受限</h2>
+                <p>${error.message}</p>
+            </div>
+        `);
+    }
+});
+    </script>
+</body>
+</html>
